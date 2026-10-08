@@ -1,0 +1,122 @@
+name: Unit test agent
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: unit-test-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  agent:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the trusted agent
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+
+      - name: Check out the pull request
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch the base revision
+        working-directory: pr
+        run: git fetch --no-tags origin ${{ github.event.pull_request.base.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pr/frontend/package-lock.json
+
+      - name: Install the backend
+        working-directory: pr
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Install the frontend
+        working-directory: pr/frontend
+        run: npm ci
+
+      - name: Check the agent
+        working-directory: trusted
+        env:
+          PYTHONPATH: agent
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        run: python -m pytest -q agent/tests
+
+      - name: Create or update tests
+        id: agent
+        working-directory: pr
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted/agent
+          TASKLY_SKILL_ROOT: ${{ github.workspace }}/trusted
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python -m taskly_agent run --scope pull-request --base "$BASE_SHA" --head "$HEAD_SHA" --root .
+        continue-on-error: true
+
+      - name: Publish the pull request comment
+        if: always()
+        working-directory: pr
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted/agent
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python -m taskly_agent publish --root .
+
+      - name: Commit passing test updates
+        if: steps.agent.outcome == 'success'
+        working-directory: pr
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+          payload = json.loads(Path("agent/reports/result.json").read_text(encoding="utf-8"))
+          if not payload.get("passed"):
+              sys.exit(0)
+          files = [item["path"] for item in payload["files"] if item["action"] in {"created", "updated"}]
+          allowed = []
+          for path in files:
+              normalized = path.replace("\\", "/")
+              if normalized.startswith("backend/tests/") and normalized.endswith(".py"):
+                  allowed.append(path)
+              elif normalized.startswith("frontend/src/") and (normalized.endswith(".test.ts") or normalized.endswith(".test.tsx")):
+                  allowed.append(path)
+          if not allowed:
+              sys.exit(0)
+          subprocess.check_call(["git", "add", "--", *allowed])
+          diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+          if diff.returncode == 0:
+              sys.exit(0)
+          subprocess.check_call(["git", "config", "user.name", "github-actions[bot]"])
+          subprocess.check_call(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
+          subprocess.check_call(["git", "commit", "-m", "test: cover the code changed in this pull request"])
+          subprocess.check_call(["git", "push", "origin", "HEAD:${{ github.event.pull_request.head.ref }}"])
+          PY
+
+      - name: Fail the check when tests fail
+        if: steps.agent.outcome != 'success'
+        run: exit 1
