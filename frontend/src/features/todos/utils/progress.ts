@@ -7,3 +7,9 @@ export function completionPercent(completed: boolean[]): number {
   const done = completed.filter(Boolean).length
   return Math.round((done * 100) / completed.length)
 }
+
+export function openLabel(completed: boolean[]): string {
+  const remaining = remainingCount(completed)
+  if (remaining === 0) return 'All tasks are complete.'
+  return `${remaining} still open`
+}
