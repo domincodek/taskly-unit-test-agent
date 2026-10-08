@@ -74,7 +74,18 @@ The progress summary is a small feature on both sides: `backend/app/features/tod
 
 The generated backend checks include `remaining_count([]) == 0`, `remaining_count([False, True]) == 1`, and `completion_percent([False, True]) == 50`. The frontend file asserts the same behavior for `remainingCount` and `completionPercent`. The component test renders both copies: "Some tasks are still open." and "All tasks are complete."
 
-An earlier run did use `repair-unit-tests`. The factory assertion looked for `/api/health` on the top-level route list, and the empty-state test mocked the wrong module id, so the design-system theme was missing. The retry failed the same way, the agent published the failure, and it did not treat the application source as something it could edit. The generators were corrected and the next run passed.
+The same loop also ran on GitHub for [pull request 1](https://github.com/domincodek/taskly-unit-test-agent/pull/1), which adds `open_label` and `openLabel` and does not include tests. The workflow used the agent from `main`:
+
+- `analyze-changes`: 2 changed paths in `pull-request` scope
+- `assess-test-need`: both progress modules, because their existing tests are agent-owned and the new functions were not covered
+- `author-unit-tests`: rewrote `backend/tests/features/todos/test_progress.py` and `frontend/src/features/todos/utils/progress.test.ts`
+- `run-unit-tests`: pytest and vitest passed
+- `publish-pr-results`: one comment on the pull request
+- the workflow then pushed `test: cover the code changed in this pull request`
+
+The added assertions are `open_label([]) == "All tasks are complete."`, `open_label([False]) == "1 still open"`, and the same two cases for `openLabel`.
+
+An earlier local run did use `repair-unit-tests`. The factory assertion looked for `/api/health` on the top-level route list, and the empty-state test mocked the wrong module id, so the design-system theme was missing. The retry failed the same way, the agent published the failure, and it did not treat the application source as something it could edit. The generators were corrected and the next run passed.
 
 After that work the suites were:
 
